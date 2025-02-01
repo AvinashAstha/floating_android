@@ -55,9 +55,12 @@ class Floating {
   /// PiP may be unavailable because of system settings managed
   /// by admin or device manufacturer. Also, the device may
   /// have Android version that was released without this feature.
-  Future<bool> get isPipAvailable async {
-    _isPipAvailable ??= await _channel.invokeMethod('pipAvailable');
-    return _isPipAvailable ?? false;
+ Future<bool> get isPipAvailable async {
+    if (Platform.isAndroid) {
+      _isPipAvailable ??= await _channel.invokeMethod('pipAvailable');
+      return _isPipAvailable ?? false;
+    }
+    return false; // Return false for iOS since PiP is not supported
   }
 
   /// Checks current app PiP status.
@@ -74,14 +77,17 @@ class Floating {
       return PiPStatus.unavailable;
     }
 
-    final bool? inPipAlready = await _channel.invokeMethod('inPipAlready');
-    if (inPipAlready ?? false) {
-      return PiPStatus.enabled;
+    if (Platform.isAndroid) {
+      final bool? inPipAlready = await _channel.invokeMethod('inPipAlready');
+      if (inPipAlready ?? false) {
+        return PiPStatus.enabled;
+      }
+
+      final isAutoEnabled = lastEnableArguments is OnLeavePiP;
+      return isAutoEnabled ? PiPStatus.automatic : PiPStatus.disabled;
     }
 
-    final isAutoEnabled = lastEnableArguments is OnLeavePiP;
-
-    return isAutoEnabled ? PiPStatus.automatic : PiPStatus.disabled;
+    return PiPStatus.unavailable; // Return unavailable for iOS
   }
 
   // Notifies about changes of the PiP mode.
@@ -90,17 +96,20 @@ class Floating {
   // The probing interval can be configured in the constructor.
   //
   // This stream will call listeners only when the value changed.
-  Stream<PiPStatus> get pipStatusStream {
-    _timer ??= Timer.periodic(
-      _probeInterval,
-      (_) async {
-        final currentStatus = await pipStatus;
-        if (_controller.isClosed) {
-          return;
-        }
-        _controller.add(currentStatus);
-      },
-    );
+ Stream<PiPStatus> get pipStatusStream {
+    if (Platform.isAndroid) {
+      _timer ??= Timer.periodic(
+        _probeInterval,
+        (_) async {
+          final currentStatus = await pipStatus;
+          if (_controller.isClosed) {
+            return;
+          }
+          _controller.add(currentStatus);
+        },
+      );
+    }
+
     _stream ??= _controller.stream.asBroadcastStream();
     return _stream!.distinct();
   }
@@ -116,7 +125,11 @@ class Floating {
   /// See [ImmediatePiP] and [OnLeavePiP] to understand available [arguments].
   ///
   /// Note: this will not make any effect on Android SDK older than 26.
-  Future<PiPStatus> enable(EnableArguments arguments) async {
+ Future<PiPStatus> enable(EnableArguments arguments) async {
+    if (!Platform.isAndroid) {
+      return PiPStatus.unavailable; // PiP is not available on iOS
+    }
+
     lastEnableArguments = arguments;
     final (aspectRatio, sourceRectHint, autoEnable) = switch (arguments) {
       ImmediatePiP(:final aspectRatio, :final sourceRectHint) => (
@@ -135,9 +148,6 @@ class Floating {
       throw RationalNotMatchingAndroidRequirementsException(aspectRatio);
     }
 
-    // Cancel any previous settings in case it would interfere with the
-    // current ones, e.g. current one is ImmediatePiP but OnLeavePiP
-    // was called before.
     await cancelOnLeavePiP();
     final bool? enabledSuccessfully = await _channel.invokeMethod(
       'enablePip',
@@ -158,8 +168,9 @@ class Floating {
         : PiPStatus.unavailable;
   }
 
+
   /// Cancels current picture-in-picture setup for [OnLeavePiP]
-  Future<void> cancelOnLeavePiP() {
+   Future<void> cancelOnLeavePiP() {
     lastEnableArguments = null;
     return _channel.invokeMethod('cancelAutoEnable');
   }
